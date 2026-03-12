@@ -12,46 +12,66 @@ function extractAsin(url: string): string | null {
   return match ? match[1].toUpperCase() : null;
 }
 
-// Returns the ASIN that the loaded page is actually for.
-// Amazon embeds this in a hidden input on every product page.
-function getPageAsin($: cheerio.CheerioAPI): string {
-  return $('input[name="ASIN"]').first().attr("value")?.toUpperCase() || "";
-}
-
 function isBlockedPage($: cheerio.CheerioAPI): boolean {
-  const title = $("title").text().toLowerCase();
-  const body = ($("body").text() || "").toLowerCase().slice(0, 2000);
+  const title = $("title").text().toLowerCase().trim();
   return (
-    title === "amazon.com.br" || // homepage redirect
+    title === "amazon.com.br" ||
+    title === "" ||
     title.includes("robot check") ||
     title.includes("captcha") ||
-    title.includes("sorry") ||
-    body.includes("enter the characters you see below") ||
     $("form#captcha-form").length > 0
   );
 }
 
-async function fetchOnce(cleanUrl: string, extra: Record<string, string> = {}): Promise<cheerio.CheerioAPI | null> {
+// When Amazon serves the correct ASIN page, the variant selector
+// shows the same price in all positions. When it serves the wrong
+// default variant, prices are all different (e.g. 358, 293, 261…).
+function getPagePrices($: cheerio.CheerioAPI): number[] {
+  return $("span.a-price-whole")
+    .map((_, el) => {
+      const whole = $(el).text().trim();
+      const frac = $(el).siblings("span.a-price-fraction").first().text().trim();
+      return parsePrice(`${whole}${frac}`);
+    })
+    .get()
+    .filter((p): p is number => p !== null && p > 0);
+}
+
+function isCorrectVariantPage($: cheerio.CheerioAPI, requestedAsin: string | null): boolean {
+  // Primary check: the ASIN hidden input matches what we requested
+  const pageAsin = $('input[name="ASIN"]').first().attr("value")?.toUpperCase() || "";
+  if (requestedAsin && pageAsin && pageAsin === requestedAsin) return true;
+
+  // Secondary check: all visible prices are the same value
+  // (correct variant → uniform price; wrong variant → mixed prices)
+  const prices = getPagePrices($);
+  if (prices.length > 0 && new Set(prices).size === 1) return true;
+
+  return false;
+}
+
+const USER_AGENTS = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+];
+
+async function fetchOnce(url: string, ua: string): Promise<cheerio.CheerioAPI | null> {
   try {
-    const { data, status } = await axios.get(cleanUrl, {
+    const { data, status } = await axios.get(url, {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "User-Agent": ua,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
         "Accept-Encoding": "gzip, deflate, br",
-        "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
+        "Cache-Control": "max-age=0",
+        "Upgrade-Insecure-Requests": "1",
         "sec-fetch-dest": "document",
         "sec-fetch-mode": "navigate",
         "sec-fetch-site": "none",
         "sec-fetch-user": "?1",
-        "Cache-Control": "max-age=0",
-        "Upgrade-Insecure-Requests": "1",
-        "Connection": "keep-alive",
-        // Brazilian locale: prevents homepage redirect for non-BR server IPs
+        // Locale cookies: prevents Amazon from redirecting non-BR server IPs to homepage
         "Cookie": "lc-acbbr=pt_BR; i18n-prefs=BRL",
-        ...extra,
       },
       timeout: 20000,
       maxRedirects: 5,
@@ -65,44 +85,42 @@ async function fetchOnce(cleanUrl: string, extra: Record<string, string> = {}): 
 }
 
 async function fetchAmazonPage(url: string, requestedAsin: string | null): Promise<cheerio.CheerioAPI> {
+  // Always use clean /dp/ASIN to avoid encoded chars and tracking params
   const cleanUrl = requestedAsin
     ? `https://www.amazon.com.br/dp/${requestedAsin}`
     : url.split("?")[0].split("#")[0];
 
-  // Attempt 1 — standard request with locale cookie
-  let $ = await fetchOnce(cleanUrl);
+  // Also try with ?th=1&psc=1 which forces display of the specific ASIN variant
+  const forcedUrl = requestedAsin
+    ? `https://www.amazon.com.br/dp/${requestedAsin}?th=1&psc=1`
+    : cleanUrl;
 
-  if ($ && !isBlockedPage($)) {
-    const pageAsin = getPageAsin($);
-    // If page ASIN matches (or we can't verify), accept it
-    if (!requestedAsin || !pageAsin || pageAsin === requestedAsin) {
-      return $;
+  // Use ?th=1&psc=1 on every attempt — this forces Amazon to render the specific ASIN
+  const attempts = [
+    { url: forcedUrl, ua: USER_AGENTS[0] },
+    { url: forcedUrl, ua: USER_AGENTS[1] },
+    { url: forcedUrl, ua: USER_AGENTS[2] },
+  ];
+
+  let lastGoodPage: cheerio.CheerioAPI | null = null;
+
+  for (let i = 0; i < attempts.length; i++) {
+    if (i > 0) await new Promise(r => setTimeout(r, 1000));
+
+    const $ = await fetchOnce(attempts[i].url, attempts[i].ua);
+    if (!$ || isBlockedPage($)) continue;
+
+    lastGoodPage = $;
+
+    if (isCorrectVariantPage($, requestedAsin)) {
+      return $; // Got the right page — stop retrying
     }
-    // Amazon served the wrong variant — retry with a different user-agent
+    // Wrong variant — retry
   }
 
-  // Attempt 2 — Firefox user-agent, slight delay to avoid rate limiting
-  await new Promise(r => setTimeout(r, 800));
-  $ = await fetchOnce(cleanUrl, {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
-    "sec-ch-ua": '"Firefox";v="124", "Not-A.Brand";v="8"',
-  });
-
-  if ($ && !isBlockedPage($)) {
-    const pageAsin = getPageAsin($);
-    if (!requestedAsin || !pageAsin || pageAsin === requestedAsin) {
-      return $;
-    }
-    // Still wrong variant — use it anyway (price extraction will try ASIN-specific elements)
-    return $;
-  }
-
-  // Attempt 3 — try with ?th=1&psc=1 which forces the specific ASIN
-  await new Promise(r => setTimeout(r, 800));
-  const forcedUrl = `${cleanUrl}?th=1&psc=1`;
-  $ = await fetchOnce(forcedUrl);
-
-  if ($ && !isBlockedPage($)) return $;
+  // All attempts returned wrong variant — use last good page and let price
+  // extraction try its best with ASIN-specific hidden inputs
+  if (lastGoodPage) return lastGoodPage;
 
   throw new Error(
     "Amazon bloqueou o acesso automático. Aguarde alguns minutos e tente novamente."
@@ -110,38 +128,71 @@ async function fetchAmazonPage(url: string, requestedAsin: string | null): Promi
 }
 
 function extractPrice($: cheerio.CheerioAPI, requestedAsin: string | null): number | null {
-  // 1. JSON-LD structured data (most stable across page changes)
+  // 1. Structured data (JSON-LD / Open Graph meta tags)
   let price = extractJsonLDPrice($) || extractMetaPrice($);
   if (price) return price;
 
-  // 2. ASIN-specific hidden form inputs — these are tied to the current page's ASIN.
-  //    When Amazon serves the right variant, these are the most reliable source.
-  const amountAttr = $('input[name*="Price"][name*="amount"]').first().attr("value");
-  if (amountAttr) { price = parseFloat(amountAttr) || null; if (price) return price; }
+  // 2. All prices are the same → correct variant loaded, use that price
+  const prices = getPagePrices($);
+  if (prices.length > 0 && new Set(prices).size === 1) {
+    return prices[0];
+  }
 
-  const displayAttr = $('input[name*="Price"][name*="displayString"]').first().attr("value");
-  if (displayAttr) { price = parsePrice(displayAttr); if (price) return price; }
+  // 3. ASIN-specific price from the variant selector (must come BEFORE generic inputs
+  //    so we don't accidentally return the wrong displayed-variant price from hidden fields)
+  if (requestedAsin) {
+    // 3a. Find each span.a-price-whole and check if any ancestor contains a link to our ASIN
+    $("span.a-price-whole").each((_, priceEl) => {
+      if (price) return;
+      let $node = $(priceEl).parent();
+      for (let depth = 0; depth < 6; depth++) {
+        if (!$node.length) break;
+        const hasAsinLink =
+          $node.find(`a[href*="/dp/${requestedAsin}"]`).length > 0 ||
+          $node.find(`[data-dp-url*="${requestedAsin}"]`).length > 0 ||
+          ($node.is("a") && (($node.attr("href") || "").includes(`/dp/${requestedAsin}`) ||
+                             ($node.attr("data-dp-url") || "").includes(requestedAsin)));
+        if (hasAsinLink) {
+          const whole = $(priceEl).text().trim();
+          const frac = $(priceEl).siblings("span.a-price-fraction").first().text().trim();
+          const p = parsePrice(`${whole}${frac}`);
+          if (p) { price = p; return; }
+        }
+        $node = $node.parent();
+      }
+    });
+    if (price) return price;
+
+    // 3b. Look for plain-text "R$" price in the link text itself
+    $(`a[href*="/dp/${requestedAsin}"], [data-dp-url*="${requestedAsin}"]`).each((_, el) => {
+      if (price) return;
+      const text = $(el).text();
+      const m = text.match(/R\$\s*([\d.,]+)/);
+      if (m) { price = parsePrice(m[1]); }
+    });
+    if (price) return price;
+
+    // 3c. Dropdown <option> with ASIN as value may contain price text
+    $(`option[value="${requestedAsin}"], option[value*="${requestedAsin}"]`).each((_, el) => {
+      if (price) return;
+      const m = $(el).text().match(/R\$\s*([\d.,]+)/);
+      if (m) { price = parsePrice(m[1]); }
+    });
+    if (price) return price;
+  }
+
+  // 4. Hidden form inputs tied to the currently-displayed variant
+  //    (only reached when ASIN lookup above failed — these reflect the loaded variant)
+  const amountVal = $('input[name*="Price"][name*="amount"]').first().attr("value");
+  if (amountVal) { price = parseFloat(amountVal) || null; if (price) return price; }
+
+  const displayVal = $('input[name*="Price"][name*="displayString"]').first().attr("value");
+  if (displayVal) { price = parsePrice(displayVal); if (price) return price; }
 
   price = parseFloat($("#price-data-price").attr("value") || "") || null;
   if (price) return price;
 
-  // 3. If the page ASIN differs from what we requested, try to find
-  //    a variant link pointing to our ASIN and read its associated price.
-  if (requestedAsin) {
-    const pageAsin = getPageAsin($);
-    if (pageAsin && pageAsin !== requestedAsin) {
-      // Find any anchor/element with a reference to our ASIN
-      const variantEl = $(`[data-dp-url*="${requestedAsin}"], a[href*="/dp/${requestedAsin}"]`).first();
-      if (variantEl.length) {
-        const container = variantEl.closest("li, .swatchElement, .a-button-text, span");
-        const whole = container.find("span.a-price-whole").first().text().trim();
-        const frac = container.find("span.a-price-fraction").first().text().trim();
-        if (whole) { price = parsePrice(`${whole}${frac}`); if (price) return price; }
-      }
-    }
-  }
-
-  // 4. First visible base-color price span (reliable when correct variant is shown)
+  // 5. First base-color price (last resort — may be wrong variant's price)
   const el = $('span.a-price[data-a-color="base"]').first();
   if (el.length) {
     const whole = el.find("span.a-price-whole").first().text().trim();
@@ -149,7 +200,6 @@ function extractPrice($: cheerio.CheerioAPI, requestedAsin: string | null): numb
     if (whole) { price = parsePrice(`${whole}${frac}`); if (price) return price; }
   }
 
-  // 5. Legacy price block IDs
   return (
     parsePrice($("#priceblock_ourprice").text()) ||
     parsePrice($("#priceblock_dealprice").text())
