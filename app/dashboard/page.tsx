@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+﻿import { createClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 import DashboardClient from "./dashboard-client";
 
@@ -12,16 +12,16 @@ export default async function DashboardPage() {
 
   // Fetch user's products with latest price
   const { data: products } = await supabase
-    .from("products")
+    .from("tracked_products")
     .select(`
       id,
       url,
       title,
       image_url,
       marketplace,
-      target_price,
+      lowest_price,
       created_at,
-      price_records (
+      price_history (
         price,
         availability,
         created_at
@@ -32,7 +32,7 @@ export default async function DashboardPage() {
 
   // Transform data for client
   const transformedProducts = (products || []).map((product: any) => {
-    const records = product.price_records || [];
+    const records = product.price_history || [];
     const sorted = [...records].sort(
       (a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     );
@@ -51,7 +51,7 @@ export default async function DashboardPage() {
       title: product.title,
       imageUrl: product.image_url,
       marketplace: product.marketplace,
-      targetPrice: product.target_price,
+      targetPrice: product.lowest_price,
       createdAt: product.created_at,
       currentPrice,
       previousPrice,
@@ -65,5 +65,6 @@ export default async function DashboardPage() {
     };
   });
 
-  return <DashboardClient products={transformedProducts} userName={user.user_metadata?.full_name || user.email || "Usuário"} />;
+  return <DashboardClient products={transformedProducts} userName={user.user_metadata?.full_name || user.email || "UsuÃ¡rio"} />;
 }
+
