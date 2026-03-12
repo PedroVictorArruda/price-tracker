@@ -111,6 +111,24 @@ export default function DashboardClient({ products: initialProducts, userName }:
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Erro ao adicionar produto");
 
+      // Optimistically add the new product to local state immediately
+      const newProduct: Product = {
+        id: data.product.id,
+        url: data.product.url,
+        title: data.product.title,
+        imageUrl: data.product.image_url,
+        marketplace: data.product.marketplace,
+        targetPrice: data.product.target_price,
+        createdAt: data.product.created_at,
+        currentPrice: data.price ?? data.product.current_price ?? null,
+        previousPrice: null,
+        lowestPrice: data.price ?? data.product.lowest_price ?? null,
+        highestPrice: data.price ?? data.product.highest_price ?? null,
+        availability: "in_stock",
+        priceHistory: [],
+      };
+      setProducts((prev) => [newProduct, ...prev]);
+
       setNewUrl("");
       setNewTargetPrice("");
       setShowAddDialog(false);

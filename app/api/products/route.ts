@@ -67,6 +67,9 @@ export async function POST(request: Request) {
         image_url: imageUrl,
         marketplace,
         target_price: targetPrice || null,
+        current_price: price,
+        lowest_price: price,
+        highest_price: price,
       })
       .select()
       .single();
