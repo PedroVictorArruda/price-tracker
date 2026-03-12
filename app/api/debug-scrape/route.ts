@@ -47,35 +47,45 @@ export async function GET(request: Request) {
 
   const $ = cheerio.load(rawHtml);
 
+  // Search all inline scripts for price-like JSON patterns
+  const pricePatterns: string[] = [];
+  $("script:not([src])").each((_, el) => {
+    const content = $(el).html() || "";
+    // Look for patterns like "priceAmount":269 or "price":"269" or "buyingPrice":269
+    const matches = content.match(/"(?:priceAmount|buyingPrice|price|listPrice|salePrice|displayPrice|formattedPrice)"\s*:\s*"?([0-9.,R$ ]{3,20})"?/gi);
+    if (matches) pricePatterns.push(...matches.slice(0, 5));
+  });
+
+  // Search raw HTML for any occurrence of "269" near "price"
+  const rawPriceContext: string[] = [];
+  const priceRegex = /(?:price|Price|preco|Preco)[^}]{0,60}269[^}]{0,20}/g;
+  let m;
+  while ((m = priceRegex.exec(rawHtml)) !== null && rawPriceContext.length < 10) {
+    rawPriceContext.push(m[0].slice(0, 100));
+  }
+
   const debug = {
     httpStatus,
     pageTitle: $("title").text(),
     isCaptcha: $("form#captcha-form").length > 0,
+    productTitle: $("#productTitle").text().trim().slice(0, 100),
 
-    // Price selectors
-    apex_label: $("#apex_pricetopay_accessibility_label").text().trim(),
-    reinventPrice_whole: $("span.reinventPricePriceToPayMargin span.a-price-whole").first().text().trim(),
-    reinventPrice_frac: $("span.reinventPricePriceToPayMargin span.a-price-fraction").first().text().trim(),
-    corePrice_base_whole: $("#corePriceDisplay_desktop_feature_div span.a-price[data-a-color='base'] span.a-price-whole").first().text().trim(),
-    priceblock_ourprice: $("#priceblock_ourprice").text().trim(),
-
-    // All a-price-whole values on page (helps identify which is which)
+    // All a-price-whole values on page
     all_price_whole: $("span.a-price-whole").map((_, el) => ({
       text: $(el).text().trim(),
-      parent_class: $(el).parent().attr("class") || "",
       grandparent_class: $(el).parent().parent().attr("class") || "",
       data_a_color: $(el).closest("span.a-price").attr("data-a-color") || "",
     })).get(),
 
-    // JSON-LD scripts
+    // Price in embedded scripts
+    script_price_patterns: pricePatterns,
+    raw_price_context_269: rawPriceContext,
+
+    // JSON-LD
     jsonld_count: $('script[type="application/ld+json"]').length,
-    jsonld_first_200: $('script[type="application/ld+json"]').first().html()?.slice(0, 200) || "",
 
-    // Product title
-    productTitle: $("#productTitle").text().trim().slice(0, 100),
-
-    // Raw HTML snippet around corePriceDisplay (first 2000 chars)
-    corePriceDisplay_html: $("#corePriceDisplay_desktop_feature_div").html()?.slice(0, 2000) || "NOT FOUND",
+    // Raw HTML snippet around corePriceDisplay
+    corePriceDisplay_html: $("#corePriceDisplay_desktop_feature_div").html()?.slice(0, 1000) || "NOT FOUND",
   };
 
   return NextResponse.json(debug, { status: 200 });
