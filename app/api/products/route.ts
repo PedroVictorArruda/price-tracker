@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server";
+﻿import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
 import { detectMarketplace, scrapeProduct, MARKETPLACE_LABELS } from "@/lib/scrapers";
 
@@ -10,7 +10,7 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
-    return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
+    return NextResponse.json({ error: "NÃ£o autorizado" }, { status: 401 });
   }
 
   try {
@@ -18,28 +18,28 @@ export async function POST(request: Request) {
     const { url, targetPrice } = body;
 
     if (!url) {
-      return NextResponse.json({ error: "URL é obrigatória" }, { status: 400 });
+      return NextResponse.json({ error: "URL Ã© obrigatÃ³ria" }, { status: 400 });
     }
 
     // Detect marketplace
     const marketplace = detectMarketplace(url);
     if (!marketplace) {
       return NextResponse.json(
-        { error: "Marketplace não suportado. Use Amazon, Magalu, Americanas, Casas Bahia, KaBuM!, Ponto, Shopee ou Mercado Livre." },
+        { error: "Marketplace nÃ£o suportado. Use Amazon, Magalu, Americanas, Casas Bahia, KaBuM!, Ponto, Shopee ou Mercado Livre." },
         { status: 400 }
       );
     }
 
     // Check if user already tracks this URL
     const { data: existing } = await supabase
-      .from("products")
+      .from("tracked_products")
       .select("id")
       .eq("user_id", user.id)
       .eq("url", url)
       .single();
 
     if (existing) {
-      return NextResponse.json({ error: "Você já está rastreando este produto." }, { status: 409 });
+      return NextResponse.json({ error: "VocÃª jÃ¡ estÃ¡ rastreando este produto." }, { status: 409 });
     }
 
     // Scrape product info using existing scraper
@@ -59,7 +59,7 @@ export async function POST(request: Request) {
 
     // Insert product
     const { data: product, error: insertError } = await supabase
-      .from("products")
+      .from("tracked_products")
       .insert({
         user_id: user.id,
         url,
@@ -75,7 +75,7 @@ export async function POST(request: Request) {
 
     // Insert first price record if we got a price
     if (price) {
-      await supabase.from("price_records").insert({
+      await supabase.from("price_history").insert({
         product_id: product.id,
         price,
         availability,
@@ -100,21 +100,21 @@ export async function DELETE(request: Request) {
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
-    return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
+    return NextResponse.json({ error: "NÃ£o autorizado" }, { status: 401 });
   }
 
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
 
   if (!id) {
-    return NextResponse.json({ error: "ID é obrigatório" }, { status: 400 });
+    return NextResponse.json({ error: "ID Ã© obrigatÃ³rio" }, { status: 400 });
   }
 
   // Delete price records first
-  await supabase.from("price_records").delete().eq("product_id", id);
+  await supabase.from("price_history").delete().eq("product_id", id);
 
   const { error } = await supabase
-    .from("products")
+    .from("tracked_products")
     .delete()
     .eq("id", id)
     .eq("user_id", user.id);
@@ -125,3 +125,4 @@ export async function DELETE(request: Request) {
 
   return NextResponse.json({ success: true });
 }
+

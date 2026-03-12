@@ -1,7 +1,7 @@
-import { NextResponse } from 'next/server';
+﻿import { NextResponse } from 'next/server';
 
 export async function GET(request: Request) {
-  // Verificação de segurança para o cron job
+  // VerificaÃ§Ã£o de seguranÃ§a para o cron job
   const authHeader = request.headers.get('authorization');
   if (
     process.env.CRON_SECRET && 
@@ -11,7 +11,7 @@ export async function GET(request: Request) {
   }
 
   try {
-    // TODO: Obter os produtos ativos no banco e rodar o scraper para validar preços
+    // TODO: Obter os produtos ativos no banco e rodar o scraper para validar preÃ§os
     console.log('Running scheduled scrape for all products...');
     
     return NextResponse.json({ success: true, message: 'Cron job executed successfully' });
@@ -20,3 +20,4 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }
 }
+
