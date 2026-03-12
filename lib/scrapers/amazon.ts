@@ -85,40 +85,42 @@ export async function scrapeAmazon(url: string): Promise<ScrapedProduct> {
     extractMetaPrice($);
 
   if (!price) {
-    const priceContainers = [
-      "#corePriceDisplay_desktop_feature_div .priceToPay",
-      ".reinventPricePriceToPayMargin",
-      ".apexPriceToPay",
-      ".priceToPay",
-      "#corePriceDisplay_desktop_feature_div",
-      "#corePrice_desktop",
-    ];
+    // #apex_pricetopay_accessibility_label is an accessibility label Amazon
+    // places on the price-to-pay element — contains the full "R$ 269,00" string
+    // and is the most direct/stable selector visible in the page source.
+    price = parsePrice($("#apex_pricetopay_accessibility_label").text());
+  }
 
-    for (const selector of priceContainers) {
-      const container = $(selector);
-      if (!container.length) continue;
-
-      // .a-offscreen has the full "R$269,00" for screen readers
-      const offscreen = container.find(".a-offscreen").first().text();
-      if (offscreen) {
-        price = parsePrice(offscreen);
-        if (price) break;
-      }
-
+  if (!price) {
+    // reinventPricePriceToPayMargin is the visible price container for the
+    // current buy price. Note: .a-offscreen inside this span is often empty,
+    // so we reconstruct from .a-price-whole + .a-price-fraction directly.
+    const container = $("span.reinventPricePriceToPayMargin").first();
+    if (container.length) {
       const whole = container.find("span.a-price-whole").first().text().trim();
       const frac = container.find("span.a-price-fraction").first().text().trim();
-      if (whole) {
-        price = parsePrice(`${whole}${frac}`);
-        if (price) break;
-      }
+      if (whole) price = parsePrice(`${whole}${frac}`);
+    }
+  }
+
+  if (!price) {
+    // Fallback: corePriceDisplay container — walk all .a-price children and
+    // pick the one marked with data-a-color="base" (the main price, not strikethrough)
+    const coreDiv = $("#corePriceDisplay_desktop_feature_div");
+    if (coreDiv.length) {
+      coreDiv.find("span.a-price[data-a-color='base']").each((_, el) => {
+        if (price) return;
+        const whole = $(el).find("span.a-price-whole").first().text().trim();
+        const frac = $(el).find("span.a-price-fraction").first().text().trim();
+        if (whole) price = parsePrice(`${whole}${frac}`);
+      });
     }
   }
 
   if (!price) {
     price =
       parsePrice($("#priceblock_ourprice").text()) ||
-      parsePrice($("#priceblock_dealprice").text()) ||
-      parsePrice($("span[data-a-color='price'] .a-offscreen").first().text());
+      parsePrice($("#priceblock_dealprice").text());
   }
 
   // ── Image ─────────────────────────────────────────────────────────────
