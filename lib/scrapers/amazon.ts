@@ -42,6 +42,8 @@ async function fetchAmazonPage(url: string): Promise<cheerio.CheerioAPI> {
       "Cache-Control": "max-age=0",
       "Upgrade-Insecure-Requests": "1",
       "Connection": "keep-alive",
+      // Critical: without Brazilian locale cookies Amazon redirects to homepage
+      "Cookie": "lc-acbbr=pt_BR; i18n-prefs=BRL",
     },
     timeout: 20000,
     maxRedirects: 5,
@@ -96,36 +98,33 @@ export async function scrapeAmazon(url: string): Promise<ScrapedProduct> {
     extractMetaPrice($);
 
   if (!price) {
-    // #apex_pricetopay_accessibility_label is an accessibility label Amazon
-    // places on the price-to-pay element — contains the full "R$ 269,00" string
-    // and is the most direct/stable selector visible in the page source.
-    price = parsePrice($("#apex_pricetopay_accessibility_label").text());
+    // Hidden input confirmed by debug: name contains "Price" and "amount"
+    // e.g. items[0][Price][amount] value="269.0"
+    const hiddenAmount = $('input[name*="Price"][name*="amount"]').first().attr("value");
+    if (hiddenAmount) price = parseFloat(hiddenAmount) || null;
   }
 
   if (!price) {
-    // reinventPricePriceToPayMargin is the visible price container for the
-    // current buy price. Note: .a-offscreen inside this span is often empty,
-    // so we reconstruct from .a-price-whole + .a-price-fraction directly.
-    const container = $("span.reinventPricePriceToPayMargin").first();
-    if (container.length) {
-      const whole = container.find("span.a-price-whole").first().text().trim();
-      const frac = container.find("span.a-price-fraction").first().text().trim();
+    // Hidden input with display string e.g. value="R$ 269,00"
+    const hiddenDisplay = $('input[name*="Price"][name*="displayString"]').first().attr("value");
+    if (hiddenDisplay) price = parsePrice(hiddenDisplay);
+  }
+
+  if (!price) {
+    // First span.a-price[data-a-color="base"] — confirmed by debug to contain
+    // the correct price when the page loads with Brazilian locale cookies
+    const el = $('span.a-price[data-a-color="base"]').first();
+    if (el.length) {
+      const whole = el.find("span.a-price-whole").first().text().trim();
+      const frac = el.find("span.a-price-fraction").first().text().trim();
       if (whole) price = parsePrice(`${whole}${frac}`);
     }
   }
 
   if (!price) {
-    // Fallback: corePriceDisplay container — walk all .a-price children and
-    // pick the one marked with data-a-color="base" (the main price, not strikethrough)
-    const coreDiv = $("#corePriceDisplay_desktop_feature_div");
-    if (coreDiv.length) {
-      coreDiv.find("span.a-price[data-a-color='base']").each((_, el) => {
-        if (price) return;
-        const whole = $(el).find("span.a-price-whole").first().text().trim();
-        const frac = $(el).find("span.a-price-fraction").first().text().trim();
-        if (whole) price = parsePrice(`${whole}${frac}`);
-      });
-    }
+    // data-price hidden input confirmed in debug: id="price-data-price" value="269"
+    const dataPriceEl = $("#price-data-price, [class*='price-data-price']").first();
+    if (dataPriceEl.length) price = parseFloat(dataPriceEl.attr("value") || "") || null;
   }
 
   if (!price) {
