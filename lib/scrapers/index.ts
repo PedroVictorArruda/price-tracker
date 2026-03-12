@@ -43,16 +43,87 @@ export async function fetchPage(url: string): Promise<cheerio.CheerioAPI> {
   const { data } = await axios.get(url, {
     headers: {
       "User-Agent": getRandomUserAgent(),
-      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
       "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
       "Accept-Encoding": "gzip, deflate, br",
       "Cache-Control": "no-cache",
       "Pragma": "no-cache",
+      "Connection": "keep-alive",
+      "Upgrade-Insecure-Requests": "1",
+      "Sec-Fetch-Dest": "document",
+      "Sec-Fetch-Mode": "navigate",
+      "Sec-Fetch-Site": "none",
+      "Sec-Fetch-User": "?1",
     },
-    timeout: 15000,
+    timeout: 20000,
     maxRedirects: 5,
   });
   return cheerio.load(data);
+}
+
+// ─── Structured Data Helpers ─────────────────────────────────────────────
+
+/**
+ * Extracts product price from JSON-LD <script> blocks.
+ * Most reliable source — used for SEO, stable across UI changes.
+ */
+export function extractJsonLDPrice($: cheerio.CheerioAPI): number | null {
+  let found: number | null = null;
+  $('script[type="application/ld+json"]').each((_, el) => {
+    if (found !== null) return;
+    try {
+      const raw = $(el).html() || "";
+      const json = JSON.parse(raw);
+      const items: any[] = Array.isArray(json) ? json : [json];
+      for (const item of items) {
+        if (!item) continue;
+        const type = item["@type"];
+        if (type === "Product" || type === "Offer") {
+          const offers = item.offers ?? (type === "Offer" ? item : null);
+          if (!offers) continue;
+          const offer = Array.isArray(offers) ? offers[0] : offers;
+          const raw = String(offer?.price ?? offer?.lowPrice ?? "").replace(",", ".");
+          const val = parseFloat(raw);
+          if (!isNaN(val) && val > 0) { found = val; return; }
+        }
+      }
+    } catch {}
+  });
+  return found;
+}
+
+/**
+ * Extracts product price from common meta tags.
+ * Second most reliable — used by open graph / schema.org.
+ */
+export function extractMetaPrice($: cheerio.CheerioAPI): number | null {
+  const selectors = [
+    'meta[property="product:price:amount"]',
+    'meta[property="og:price:amount"]',
+    'meta[itemprop="price"]',
+    'meta[name="price"]',
+  ];
+  for (const sel of selectors) {
+    const content = $(sel).attr("content");
+    if (content) {
+      const val = parseFloat(content.replace(",", "."));
+      if (!isNaN(val) && val > 0) return val;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extracts product price from itemprop/microdata attributes.
+ */
+export function extractItempropPrice($: cheerio.CheerioAPI): number | null {
+  const el = $('[itemprop="price"]').first();
+  if (!el.length) return null;
+  // Prefer content attribute (standard microdata), then text
+  const content = el.attr("content") || el.attr("data-price") || el.text();
+  if (!content) return null;
+  const val = parseFloat(content.replace(",", "."));
+  return !isNaN(val) && val > 0 ? val : null;
 }
 
 // ─── Marketplace Detection ──────────────────────────────────────────────

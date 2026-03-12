@@ -1,61 +1,88 @@
-import { fetchPage, parsePrice, type ScrapedProduct } from "./index";
+import {
+  fetchPage,
+  parsePrice,
+  extractJsonLDPrice,
+  extractMetaPrice,
+  type ScrapedProduct,
+} from "./index";
 
 export async function scrapeAmazon(url: string): Promise<ScrapedProduct> {
   const $ = await fetchPage(url);
 
   const title =
     $("#productTitle").text().trim() ||
-    $("span.a-size-large.product-title-word-break").text().trim();
+    $("span.a-size-large.product-title-word-break").text().trim() ||
+    $("meta[property='og:title']").attr("content")?.trim() ||
+    "";
 
-  // Try specific "price to pay" containers first to avoid picking up
-  // the crossed-out original price or installment prices
-  const priceContainerSelectors = [
-    "#corePriceDisplay_desktop_feature_div .priceToPay",
-    "#corePriceDisplay_desktop_feature_div",
-    ".priceToPay",
-    "#apex_desktop .priceToPay",
-    "#corePrice_desktop",
-  ];
+  // ── Price extraction ─────────────────────────────────────────────────
+  // Priority order:
+  //   1. JSON-LD (most stable — won't change with UI redesigns)
+  //   2. Meta tags
+  //   3. Specific "price to pay" containers (avoids crossed-out/installment prices)
+  //   4. Older Amazon price block IDs
 
-  let price: number | null = null;
+  let price: number | null =
+    extractJsonLDPrice($) ||
+    extractMetaPrice($);
 
-  for (const selector of priceContainerSelectors) {
-    const container = $(selector);
-    if (!container.length) continue;
+  if (!price) {
+    // Amazon renders multiple .a-price elements (original, installment, current).
+    // Target only the "priceToPay" container which holds the real buy price.
+    const priceContainers = [
+      "#corePriceDisplay_desktop_feature_div .priceToPay",
+      ".reinventPricePriceToPayMargin",
+      ".apexPriceToPay",
+      ".priceToPay",
+      "#corePriceDisplay_desktop_feature_div",
+      "#corePrice_desktop",
+    ];
 
-    // Prefer .a-offscreen (screen-reader text) — contains full price string
-    const offscreen = container.find(".a-offscreen").first().text();
-    if (offscreen) {
-      price = parsePrice(offscreen);
-      if (price) break;
-    }
+    for (const selector of priceContainers) {
+      const container = $(selector);
+      if (!container.length) continue;
 
-    // Fallback: reconstruct from whole + fraction parts
-    const whole = container.find("span.a-price-whole").first().text().trim();
-    const fraction = container.find("span.a-price-fraction").first().text().trim();
-    if (whole) {
-      price = parsePrice(`${whole}${fraction}`);
-      if (price) break;
+      // .a-offscreen contains the full "R$269,00" string for screen readers
+      const offscreen = container.find(".a-offscreen").first().text();
+      if (offscreen) {
+        price = parsePrice(offscreen);
+        if (price) break;
+      }
+
+      // Fallback: reconstruct from separate whole + fraction spans
+      const whole = container.find("span.a-price-whole").first().text().trim();
+      const frac = container.find("span.a-price-fraction").first().text().trim();
+      if (whole) {
+        price = parsePrice(`${whole}${frac}`);
+        if (price) break;
+      }
     }
   }
 
-  // Last-resort fallbacks for older Amazon page layouts
+  // Legacy Amazon page layouts
   if (!price) {
     price =
       parsePrice($("#priceblock_ourprice").text()) ||
       parsePrice($("#priceblock_dealprice").text()) ||
-      parsePrice($(".a-price .a-offscreen").first().text());
+      // Absolute last resort: first .a-offscreen on page (may still be wrong
+      // on pages with many price variants — only reached if everything else fails)
+      parsePrice($("span[data-a-color='price'] .a-offscreen").first().text());
   }
 
+  // ── Image ─────────────────────────────────────────────────────────────
   const imageUrl =
     $("#landingImage").attr("src") ||
     $("#imgBlkFront").attr("src") ||
+    $("meta[property='og:image']").attr("content") ||
     $(".a-dynamic-image").first().attr("src") ||
     null;
 
+  // ── Availability ──────────────────────────────────────────────────────
+  const availText = $("#availability span").text().toLowerCase();
   const availability =
-    $("#availability span").text().toLowerCase().includes("indisponível") ||
-    $("#availability span").text().toLowerCase().includes("unavailable")
+    availText.includes("indisponível") ||
+    availText.includes("unavailable") ||
+    availText.includes("esgotado")
       ? "out_of_stock"
       : "in_stock";
 

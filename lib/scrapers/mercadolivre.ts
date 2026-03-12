@@ -1,30 +1,56 @@
-import { fetchPage, parsePrice, type ScrapedProduct } from "./index";
+import {
+  fetchPage,
+  parsePrice,
+  extractJsonLDPrice,
+  extractMetaPrice,
+  extractItempropPrice,
+  type ScrapedProduct,
+} from "./index";
 
 export async function scrapeMercadoLivre(url: string): Promise<ScrapedProduct> {
   const $ = await fetchPage(url);
 
+  // ── Title ─────────────────────────────────────────────────────────────
   const title =
     $("h1.ui-pdp-title").text().trim() ||
     $("meta[property='og:title']").attr("content")?.trim() ||
-    $("h1").first().text().trim();
+    $("h1").first().text().trim() ||
+    "";
 
-  const price =
-    parsePrice($("span.andes-money-amount__fraction").first().text() +
-      ($("span.andes-money-amount__cents").first().text()
-        ? "," + $("span.andes-money-amount__cents").first().text()
-        : "")) ||
-    parsePrice($("meta[itemprop='price']").attr("content") || "");
+  // ── Price ─────────────────────────────────────────────────────────────
+  let price: number | null =
+    extractJsonLDPrice($) ||
+    extractMetaPrice($) ||
+    extractItempropPrice($);
 
+  if (!price) {
+    // MercadoLivre renders price split into fraction + cents spans
+    const fraction = $("span.andes-money-amount__fraction").first().text().trim();
+    const cents = $("span.andes-money-amount__cents").first().text().trim();
+    if (fraction) {
+      price = parsePrice(cents ? `${fraction},${cents}` : fraction);
+    }
+  }
+
+  if (!price) {
+    // Try meta[itemprop] attribute (content has raw number)
+    const content = $("meta[itemprop='price']").attr("content");
+    if (content) price = parseFloat(content) || null;
+  }
+
+  // ── Image ─────────────────────────────────────────────────────────────
   const imageUrl =
+    $("meta[property='og:image']").attr("content") ||
     $("figure.ui-pdp-gallery__figure img").first().attr("src") ||
     $("img.ui-pdp-image").first().attr("src") ||
-    $("meta[property='og:image']").attr("content") ||
     null;
 
+  // ── Availability ──────────────────────────────────────────────────────
   const bodyText = $("body").text().toLowerCase();
   const availability =
     bodyText.includes("produto não disponível") ||
-    bodyText.includes("publicação pausada")
+    bodyText.includes("publicação pausada") ||
+    bodyText.includes("anúncio pausado")
       ? "out_of_stock"
       : "in_stock";
 

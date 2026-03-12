@@ -1,23 +1,56 @@
-import { fetchPage, parsePrice, type ScrapedProduct } from "./index";
+import {
+  fetchPage,
+  parsePrice,
+  extractJsonLDPrice,
+  extractMetaPrice,
+  extractItempropPrice,
+  type ScrapedProduct,
+} from "./index";
 
 export async function scrapePonto(url: string): Promise<ScrapedProduct> {
   const $ = await fetchPage(url);
 
+  // ── Title ─────────────────────────────────────────────────────────────
   const title =
-    $("h1.product-name").text().trim() ||
-    $("h1[class*='Heading']").text().trim() ||
-    $("h1").first().text().trim();
+    $("meta[property='og:title']").attr("content")?.trim() ||
+    $("h1[itemprop='name']").text().trim() ||
+    $("h1").first().text().trim() ||
+    "";
 
-  const price =
-    parsePrice($("[class*='price__BestPrice']").first().text()) ||
-    parsePrice($("[class*='Price']").first().text()) ||
-    parsePrice($("span.sales-price").first().text());
+  // ── Price ─────────────────────────────────────────────────────────────
+  // Ponto (Pontofrio) is VTEX-based — same approach as Casas Bahia
+  let price: number | null =
+    extractJsonLDPrice($) ||
+    extractMetaPrice($) ||
+    extractItempropPrice($);
 
+  if (!price) {
+    $("script").each((_, el) => {
+      if (price) return;
+      const html = $(el).html() || "";
+      const match = html.match(/"spotPrice"\s*:\s*([\d.]+)/);
+      if (match) {
+        const val = parseFloat(match[1]);
+        if (!isNaN(val) && val > 0) price = val;
+      }
+    });
+  }
+
+  if (!price) {
+    price =
+      parsePrice($("[class*='BestPrice']").first().text()) ||
+      parsePrice($("[class*='bestPrice']").first().text()) ||
+      parsePrice($("span.sales-price").first().text());
+  }
+
+  // ── Image ─────────────────────────────────────────────────────────────
   const imageUrl =
-    $("img[class*='main-image']").attr("src") ||
+    $("meta[property='og:image']").attr("content") ||
+    $("img[itemprop='image']").attr("src") ||
     $("picture img").first().attr("src") ||
     null;
 
+  // ── Availability ──────────────────────────────────────────────────────
   const bodyText = $("body").text().toLowerCase();
   const availability =
     bodyText.includes("produto indisponível") ||
