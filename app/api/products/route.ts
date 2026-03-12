@@ -1,6 +1,6 @@
 ﻿import { createClient } from "@/lib/supabase/server";
 import { NextResponse } from "next/server";
-import { detectMarketplace, scrapeProduct, MARKETPLACE_LABELS } from "@/lib/scrapers";
+import { detectMarketplace, scrapeProduct } from "@/lib/scrapers";
 
 /**
  * POST /api/products - Add a new product to track
@@ -45,17 +45,21 @@ export async function POST(request: Request) {
     // Scrape product info using existing scraper
     const result = await scrapeProduct(url);
 
-    let title = `Produto ${MARKETPLACE_LABELS[marketplace]}`;
-    let price: number | null = null;
-    let imageUrl: string | null = null;
-    let availability: string = "unknown";
-
-    if (result.success && result.data) {
-      title = result.data.title;
-      price = result.data.price;
-      imageUrl = result.data.imageUrl;
-      availability = result.data.availability;
+    // If scraping failed, surface the error to the user instead of
+    // silently saving a product with no title or price.
+    if (!result.success) {
+      return NextResponse.json(
+        { error: result.error || "Não foi possível obter os dados do produto. Verifique a URL e tente novamente." },
+        { status: 422 }
+      );
     }
+
+    const { title, price, imageUrl, availability } = {
+      title: result.data!.title,
+      price: result.data!.price,
+      imageUrl: result.data!.imageUrl,
+      availability: result.data!.availability,
+    };
 
     // Insert product
     const { data: product, error: insertError } = await supabase
