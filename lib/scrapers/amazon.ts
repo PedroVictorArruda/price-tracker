@@ -7,15 +7,45 @@ export async function scrapeAmazon(url: string): Promise<ScrapedProduct> {
     $("#productTitle").text().trim() ||
     $("span.a-size-large.product-title-word-break").text().trim();
 
-  const priceWhole = $("span.a-price-whole").first().text().trim();
-  const priceFraction = $("span.a-price-fraction").first().text().trim();
-  const priceText = priceWhole ? `${priceWhole}${priceFraction}` : "";
+  // Try specific "price to pay" containers first to avoid picking up
+  // the crossed-out original price or installment prices
+  const priceContainerSelectors = [
+    "#corePriceDisplay_desktop_feature_div .priceToPay",
+    "#corePriceDisplay_desktop_feature_div",
+    ".priceToPay",
+    "#apex_desktop .priceToPay",
+    "#corePrice_desktop",
+  ];
 
-  const price =
-    parsePrice(priceText) ||
-    parsePrice($(".a-price .a-offscreen").first().text()) ||
-    parsePrice($("#priceblock_ourprice").text()) ||
-    parsePrice($("#priceblock_dealprice").text());
+  let price: number | null = null;
+
+  for (const selector of priceContainerSelectors) {
+    const container = $(selector);
+    if (!container.length) continue;
+
+    // Prefer .a-offscreen (screen-reader text) — contains full price string
+    const offscreen = container.find(".a-offscreen").first().text();
+    if (offscreen) {
+      price = parsePrice(offscreen);
+      if (price) break;
+    }
+
+    // Fallback: reconstruct from whole + fraction parts
+    const whole = container.find("span.a-price-whole").first().text().trim();
+    const fraction = container.find("span.a-price-fraction").first().text().trim();
+    if (whole) {
+      price = parsePrice(`${whole}${fraction}`);
+      if (price) break;
+    }
+  }
+
+  // Last-resort fallbacks for older Amazon page layouts
+  if (!price) {
+    price =
+      parsePrice($("#priceblock_ourprice").text()) ||
+      parsePrice($("#priceblock_dealprice").text()) ||
+      parsePrice($(".a-price .a-offscreen").first().text());
+  }
 
   const imageUrl =
     $("#landingImage").attr("src") ||
