@@ -64,36 +64,44 @@ export async function GET(request: Request) {
     rawPriceContext.push(m[0].slice(0, 100));
   }
 
-  // Try Amazon AOD (All Offers Display) — server-rendered buy-box price
-  let aodResult: any = { status: "not_tried" };
+  const sharedHeaders = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    // Brazilian locale cookies help Amazon return pt-BR content
+    "Cookie": "lc-acbbr=pt_BR; i18n-prefs=BRL",
+  };
+
+  // Test 3 alternative Amazon endpoints that are server-rendered
+  const altTests: Record<string, any> = {};
   if (asinMatch) {
     const asin = asinMatch[1].toUpperCase();
-    try {
-      const aodRes = await axios.get(
-        `https://www.amazon.com.br/gp/aod/ajax/ref=dp_aod_NEW_mbc?asin=${asin}&pc=dp&isonlyprime=0`,
-        {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "text/html,*/*",
-            "Accept-Language": "pt-BR,pt;q=0.9",
-            "Referer": `https://www.amazon.com.br/dp/${asin}`,
-            "X-Requested-With": "XMLHttpRequest",
-          },
+    const endpoints: Record<string, string> = {
+      offer_listing: `https://www.amazon.com.br/gp/offer-listing/${asin}/ref=dp_olp_new_mbc?condition=new`,
+      dp_with_locale: `https://www.amazon.com.br/dp/${asin}?language=pt_BR`,
+      product_gp: `https://www.amazon.com.br/gp/product/${asin}?psc=1`,
+    };
+
+    for (const [key, endpoint] of Object.entries(endpoints)) {
+      try {
+        const r = await axios.get(endpoint, {
+          headers: { ...sharedHeaders, "Accept": "text/html,*/*" },
           timeout: 10000,
           validateStatus: () => true,
-        }
-      );
-      const $aod = cheerio.load(aodRes.data as string);
-      const prices = $aod("span.a-price-whole").map((_, el) => $aod(el).text().trim()).get();
-      const offscreenPrices = $aod(".a-offscreen").map((_, el) => $aod(el).text().trim()).get().filter(t => t.includes("R$") || /\d{2,}/.test(t));
-      aodResult = {
-        status: aodRes.status,
-        price_whole_elements: prices,
-        offscreen_prices: offscreenPrices.slice(0, 10),
-        raw_html_preview: (aodRes.data as string).slice(0, 1000),
-      };
-    } catch (e: any) {
-      aodResult = { status: "error", message: e.message };
+        });
+        const $e = cheerio.load(r.data as string);
+        const prices = $e("span.a-price-whole").map((_, el) => $e(el).text().trim()).get();
+        const offscreen = $e(".a-offscreen").map((_, el) => $e(el).text().trim()).get()
+          .filter(t => /R\$|[0-9]{2,}/.test(t)).slice(0, 8);
+        altTests[key] = {
+          status: r.status,
+          pageTitle: $e("title").text().slice(0, 60),
+          price_whole: prices,
+          offscreen_prices: offscreen,
+        };
+      } catch (e: any) {
+        altTests[key] = { status: "error", message: e.message };
+      }
     }
   }
 
@@ -108,7 +116,7 @@ export async function GET(request: Request) {
     })).get(),
     script_price_patterns: pricePatterns,
     raw_price_context_269: rawPriceContext,
-    aod_endpoint: aodResult,
+    alternative_endpoints: altTests,
   };
 
   return NextResponse.json(debug, { status: 200 });
