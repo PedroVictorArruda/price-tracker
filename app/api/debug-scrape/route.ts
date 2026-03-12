@@ -9,7 +9,10 @@ export async function GET(request: Request) {
   const url = searchParams.get("url");
   if (!url) return NextResponse.json({ error: "url param required" }, { status: 400 });
 
-  const cleanUrl = url.split("?")[0].split("#")[0];
+  const asinMatch = url.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+  const cleanUrl = asinMatch
+    ? `https://www.amazon.com.br/dp/${asinMatch[1].toUpperCase()}`
+    : url.split("?")[0].split("#")[0];
 
   let rawHtml = "";
   let httpStatus = 0;

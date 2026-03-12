@@ -9,9 +9,20 @@ import {
 
 // Amazon-specific fetch with headers that closely mimic a real Chrome browser.
 // Amazon's bot detection inspects sec-ch-ua, Accept, and header ordering.
+function extractAsin(url: string): string | null {
+  // Matches /dp/ASIN or /gp/product/ASIN
+  const match = url.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+  return match ? match[1].toUpperCase() : null;
+}
+
 async function fetchAmazonPage(url: string): Promise<cheerio.CheerioAPI> {
-  // Normalise URL: remove tracking params that can trigger redirects/captcha
-  const cleanUrl = url.split("?")[0].split("#")[0];
+  // Always use a clean /dp/ASIN URL to avoid:
+  //  - URL-encoded special chars in product name paths causing redirects
+  //  - Tracking params that trigger bot detection or homepage redirects
+  const asin = extractAsin(url);
+  const cleanUrl = asin
+    ? `https://www.amazon.com.br/dp/${asin}`
+    : url.split("?")[0].split("#")[0];
 
   const { data, status } = await axios.get(cleanUrl, {
     headers: {
