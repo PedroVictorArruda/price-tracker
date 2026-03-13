@@ -1,5 +1,6 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
+import fs from "fs";
 import {
   parsePrice,
   extractJsonLDPrice,
@@ -184,6 +185,10 @@ export async function scrapeAmazon(url: string): Promise<ScrapedProduct> {
   const requestedAsin = extractAsin(url);
   const $ = await fetchAmazonPage(url, requestedAsin);
 
+  // 🐛 MODO DEBUG: Salva o HTML que o Axios viu em um arquivo na raiz do projeto
+  fs.writeFileSync("debug-amazon.html", $.html());
+  console.log(`[DEBUG] HTML salvo. Procurando ASIN: ${requestedAsin}`);
+
   const title =
     $("#productTitle").text().trim() ||
     $("span.a-size-large.product-title-word-break").text().trim() ||
@@ -191,11 +196,13 @@ export async function scrapeAmazon(url: string): Promise<ScrapedProduct> {
     "";
 
   if (!title) {
-    // Se não achou nem o título, provavelmente o HTML carregado é inválido/bloqueado.
-    throw new Error("Página da Amazon não retornou os dados estruturados básicos (Possível bloqueio agressivo).");
+    throw new Error("Página da Amazon não retornou os dados estruturados básicos.");
   }
 
   const price = extractPrice($, requestedAsin);
+
+  // 🐛 DEBUG LOG
+  console.log(`[DEBUG] Preço encontrado pelo scraper: ${price}`);
 
   const imageUrl =
     $("#landingImage").attr("src") ||
@@ -214,7 +221,6 @@ export async function scrapeAmazon(url: string): Promise<ScrapedProduct> {
       : "in_stock";
 
   if (!price) {
-    console.error("HTML Recebido:", $.html().substring(0, 500) + "..."); // Debug útil
     throw new Error("Preço não encontrado na Amazon");
   }
 
