@@ -38,6 +38,39 @@ function getRandomUserAgent(): string {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
+// ─── URL Resolver (Short Links) ─────────────────────────────────────────
+/**
+ * Resolve URLs curtas de aplicativos mobile (Amazon, Shopee, Mercado Livre)
+ * seguindo os redirecionamentos (HTTP 302) até a URL final do produto.
+ */
+export async function resolveShortUrl(url: string): Promise<string> {
+  const shortDomains = [
+    "a.co/",
+    "amzn.to/",
+    "shp.ee/",
+    "mercadolivre.com/sec/"
+  ];
+
+  const isShortUrl = shortDomains.some(domain => url.includes(domain));
+
+  // Se não for um link curto, devolve a URL original imediatamente
+  if (!isShortUrl) return url;
+
+  try {
+    const response = await axios.get(url, {
+      headers: {
+        "User-Agent": getRandomUserAgent(),
+      },
+      maxRedirects: 5,
+    });
+    // O Node.js/Axios armazena a URL final resolvida aqui:
+    return response.request?.res?.responseUrl || url;
+  } catch (error: any) {
+    // Mesmo se o request final falhar (ex: 404), o Axios pode ter seguido o redirect.
+    return error.request?.res?.responseUrl || url;
+  }
+}
+
 // ─── Shared HTTP Fetch ──────────────────────────────────────────────────
 export async function fetchPage(url: string): Promise<cheerio.CheerioAPI> {
   const { data } = await axios.get(url, {
@@ -63,10 +96,6 @@ export async function fetchPage(url: string): Promise<cheerio.CheerioAPI> {
 
 // ─── Structured Data Helpers ─────────────────────────────────────────────
 
-/**
- * Extracts product price from JSON-LD <script> blocks.
- * Most reliable source — used for SEO, stable across UI changes.
- */
 export function extractJsonLDPrice($: cheerio.CheerioAPI): number | null {
   let found: number | null = null;
   $('script[type="application/ld+json"]').each((_, el) => {
@@ -87,15 +116,11 @@ export function extractJsonLDPrice($: cheerio.CheerioAPI): number | null {
           if (!isNaN(val) && val > 0) { found = val; return; }
         }
       }
-    } catch {}
+    } catch { }
   });
   return found;
 }
 
-/**
- * Extracts product price from common meta tags.
- * Second most reliable — used by open graph / schema.org.
- */
 export function extractMetaPrice($: cheerio.CheerioAPI): number | null {
   const selectors = [
     'meta[property="product:price:amount"]',
@@ -113,13 +138,9 @@ export function extractMetaPrice($: cheerio.CheerioAPI): number | null {
   return null;
 }
 
-/**
- * Extracts product price from itemprop/microdata attributes.
- */
 export function extractItempropPrice($: cheerio.CheerioAPI): number | null {
   const el = $('[itemprop="price"]').first();
   if (!el.length) return null;
-  // Prefer content attribute (standard microdata), then text
   const content = el.attr("content") || el.attr("data-price") || el.text();
   if (!content) return null;
   const val = parseFloat(content.replace(",", "."));
@@ -128,14 +149,14 @@ export function extractItempropPrice($: cheerio.CheerioAPI): number | null {
 
 // ─── Marketplace Detection ──────────────────────────────────────────────
 const MARKETPLACE_PATTERNS: Record<Marketplace, RegExp[]> = {
-  amazon: [/amazon\.com\.br/i],
+  amazon: [/amazon\.com\.br/i, /amazon\.com/i, /a\.co/i, /amzn\.to/i],
   magalu: [/magazineluiza\.com\.br/i, /magalu\.com\.br/i],
   americanas: [/americanas\.com\.br/i],
   casasbahia: [/casasbahia\.com\.br/i],
   kabum: [/kabum\.com\.br/i],
   ponto: [/pontofrio\.com\.br/i, /ponto\.com\.br/i],
-  shopee: [/shopee\.com\.br/i],
-  mercadolivre: [/mercadolivre\.com\.br/i, /produto\.mercadolivre/i],
+  shopee: [/shopee\.com\.br/i, /shp\.ee/i],
+  mercadolivre: [/mercadolivre\.com\.br/i, /produto\.mercadolivre/i, /mercadolivre\.com\/sec/i],
 };
 
 export function detectMarketplace(url: string): Marketplace | null {
@@ -172,7 +193,6 @@ export const MARKETPLACE_COLORS: Record<Marketplace, string> = {
 // ─── Price Parsing ──────────────────────────────────────────────────────
 export function parsePrice(text: string): number | null {
   if (!text) return null;
-  // Remove "R$", dots (thousands), and replace comma with period
   const cleaned = text
     .replace(/R\$\s*/g, "")
     .replace(/\./g, "")
@@ -205,14 +225,20 @@ const SCRAPERS: Record<Marketplace, (url: string) => Promise<ScrapedProduct>> = 
 };
 
 export async function scrapeProduct(url: string): Promise<ScraperResult> {
-  const marketplace = detectMarketplace(url);
+  // 1. Resolve URLs curtas ANTES de detectar o marketplace
+  const finalUrl = await resolveShortUrl(url);
+
+  // 2. Detecta o marketplace usando a URL final já expandida
+  const marketplace = detectMarketplace(finalUrl);
+
   if (!marketplace) {
     return { success: false, error: "Marketplace não suportado. Tente: Amazon, Magalu, Americanas, Casas Bahia, KaBuM!, Ponto, Shopee ou Mercado Livre." };
   }
 
   try {
     const scraper = SCRAPERS[marketplace];
-    const data = await scraper(url);
+    // 3. Passa a URL expandida para os scrapers individuais
+    const data = await scraper(finalUrl);
     return { success: true, data };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Erro desconhecido ao buscar produto";

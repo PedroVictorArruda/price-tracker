@@ -1,6 +1,5 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
-import fs from "fs";
 import {
   parsePrice,
   extractJsonLDPrice,
@@ -49,7 +48,6 @@ function isCorrectVariantPage($: cheerio.CheerioAPI, requestedAsin: string | nul
   return false;
 }
 
-// User-Agents atualizados e mais realistas
 const USER_AGENTS = [
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -61,7 +59,7 @@ async function fetchOnce(url: string, ua: string): Promise<cheerio.CheerioAPI | 
     const { data, status } = await axios.get(url, {
       headers: {
         "User-Agent": ua,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
         "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
         "Accept-Encoding": "gzip, deflate, br",
         "Cache-Control": "max-age=0",
@@ -73,17 +71,16 @@ async function fetchOnce(url: string, ua: string): Promise<cheerio.CheerioAPI | 
         "sec-fetch-mode": "navigate",
         "sec-fetch-site": "cross-site",
         "sec-fetch-user": "?1",
-        "Cookie": "session-id=135-1234567-1234567; i18n-prefs=BRL; lc-acbbr=pt_BR;", // Fake session to look more legit
+        "Cookie": "session-id=135-1234567-1234567; i18n-prefs=BRL; lc-acbbr=pt_BR;",
       },
       timeout: 15000,
       maxRedirects: 5,
       validateStatus: () => true,
     });
 
-    if (status !== 200 && status !== 404) return null; // Accept 404 to handle unavailable products gracefully
+    if (status !== 200 && status !== 404) return null;
     return cheerio.load(data);
   } catch (error) {
-    console.error("Axios fetch error:", error);
     return null;
   }
 }
@@ -99,7 +96,7 @@ async function fetchAmazonPage(url: string, requestedAsin: string | null): Promi
 
   const attempts = [
     { url: forcedUrl, ua: USER_AGENTS[0] },
-    { url: cleanUrl, ua: USER_AGENTS[1] }, // Tenta sem parâmetros na segunda vez
+    { url: cleanUrl, ua: USER_AGENTS[1] },
     { url: forcedUrl, ua: USER_AGENTS[2] },
   ];
 
@@ -107,7 +104,6 @@ async function fetchAmazonPage(url: string, requestedAsin: string | null): Promi
 
   for (let i = 0; i < attempts.length; i++) {
     if (i > 0) {
-      // Backoff aleatório para não parecer robô (1s a 3s)
       await new Promise(r => setTimeout(r, 1000 + Math.random() * 2000));
     }
 
@@ -115,10 +111,7 @@ async function fetchAmazonPage(url: string, requestedAsin: string | null): Promi
 
     if (!$) continue;
 
-    if (isBlockedPage($)) {
-      console.warn(`Attempt ${i + 1} blocked by Amazon (Captcha/Robot check).`);
-      continue;
-    }
+    if (isBlockedPage($)) continue;
 
     lastGoodPage = $;
 
@@ -133,8 +126,6 @@ async function fetchAmazonPage(url: string, requestedAsin: string | null): Promi
 }
 
 function extractPrice($: cheerio.CheerioAPI, requestedAsin: string | null): number | null {
-  // 1. PRIORIDADE MÁXIMA: Bloco principal de preço (Buy Box / Display Feature)
-  // É aqui que a Amazon renderiza o preço final da variante selecionada na tela.
   const mainBuyBoxSelectors = [
     "#corePriceDisplay_desktop_feature_div",
     "#corePrice_feature_div",
@@ -145,12 +136,10 @@ function extractPrice($: cheerio.CheerioAPI, requestedAsin: string | null): numb
   for (const boxSelector of mainBuyBoxSelectors) {
     const $box = $(boxSelector);
     if ($box.length > 0) {
-      // Procura a estrutura exata que você inspecionou (whole + fraction)
       const $whole = $box.find("span.a-price-whole").first();
       const $fraction = $box.find("span.a-price-fraction").first();
 
       if ($whole.length > 0) {
-        // Remove pontos e vírgulas (ex: "260," vira "260")
         const wholeText = $whole.text().replace(/[,.]/g, "").trim();
         const fracText = $fraction.text().trim() || "00";
 
@@ -158,7 +147,6 @@ function extractPrice($: cheerio.CheerioAPI, requestedAsin: string | null): numb
         if (price) return price;
       }
 
-      // Fallback dentro da Buy Box: texto offscreen (para leitores de tela)
       const offscreenText = $box.find(".a-price span.a-offscreen").first().text().trim();
       if (offscreenText) {
         const price = parsePrice(offscreenText);
@@ -167,11 +155,9 @@ function extractPrice($: cheerio.CheerioAPI, requestedAsin: string | null): numb
     }
   }
 
-  // 2. Se não encontrou na Buy Box principal, tenta metadados estruturados (Fallback)
   let price = extractJsonLDPrice($) || extractMetaPrice($);
   if (price) return price;
 
-  // 3. Fallback genérico: busca o primeiro preço que aparecer na página inteira
   const firstWhole = $("span.a-price-whole").first().text().replace(/[,.]/g, "").trim();
   const firstFrac = $("span.a-price-fraction").first().text().trim() || "00";
   if (firstWhole) {
@@ -185,10 +171,6 @@ export async function scrapeAmazon(url: string): Promise<ScrapedProduct> {
   const requestedAsin = extractAsin(url);
   const $ = await fetchAmazonPage(url, requestedAsin);
 
-  // 🐛 MODO DEBUG: Salva o HTML que o Axios viu em um arquivo na raiz do projeto
-  fs.writeFileSync("debug-amazon.html", $.html());
-  console.log(`[DEBUG] HTML salvo. Procurando ASIN: ${requestedAsin}`);
-
   const title =
     $("#productTitle").text().trim() ||
     $("span.a-size-large.product-title-word-break").text().trim() ||
@@ -196,13 +178,20 @@ export async function scrapeAmazon(url: string): Promise<ScrapedProduct> {
     "";
 
   if (!title) {
-    throw new Error("Página da Amazon não retornou os dados estruturados básicos.");
+    throw new Error("Página da Amazon não retornou os dados estruturados básicos (Possível bloqueio agressivo).");
   }
 
-  const price = extractPrice($, requestedAsin);
+  // 1. PRIMEIRO checamos se está disponível (ANTES de procurar preço)
+  const availText = $("#availability").text().toLowerCase(); // Pegando o texto inteiro do bloco
+  const outOfStockKeywords = ["indisponível", "unavailable", "esgotado", "não temos previsão de quando"];
+  const isOutOfStock = outOfStockKeywords.some(keyword => availText.includes(keyword));
 
-  // 🐛 DEBUG LOG
-  console.log(`[DEBUG] Preço encontrado pelo scraper: ${price}`);
+  let price: number | null = null;
+
+  // 2. Só tenta extrair preço se o produto aparentemente estiver em estoque
+  if (!isOutOfStock) {
+    price = extractPrice($, requestedAsin);
+  }
 
   const imageUrl =
     $("#landingImage").attr("src") ||
@@ -211,24 +200,17 @@ export async function scrapeAmazon(url: string): Promise<ScrapedProduct> {
     $(".a-dynamic-image").first().attr("src") ||
     null;
 
-  const availText = $("#availability span").text().toLowerCase();
-  const availability =
-    availText.includes("indisponível") ||
-      availText.includes("unavailable") ||
-      availText.includes("esgotado") ||
-      availText.includes("não temos previsão de quando")
-      ? "out_of_stock"
-      : "in_stock";
-
-  if (!price) {
-    throw new Error("Preço não encontrado na Amazon");
+  // 3. Validação Final
+  // Se não tem preço E diz que está em estoque, temos um problema real de scraping
+  if (!price && !isOutOfStock) {
+    throw new Error("Preço não encontrado na Amazon e produto não consta como esgotado.");
   }
 
   return {
     title: title.substring(0, 300),
-    price,
+    price: price || 0, // Se estiver esgotado, salva no banco como 0
     imageUrl,
-    availability,
+    availability: isOutOfStock ? "out_of_stock" : "in_stock",
     marketplace: "amazon",
   };
 }

@@ -10,7 +10,7 @@ export async function POST(request: Request) {
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
-    return NextResponse.json({ error: "NÃ£o autorizado" }, { status: 401 });
+    return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
   }
 
   try {
@@ -18,14 +18,14 @@ export async function POST(request: Request) {
     const { url, targetPrice } = body;
 
     if (!url) {
-      return NextResponse.json({ error: "URL Ã© obrigatÃ³ria" }, { status: 400 });
+      return NextResponse.json({ error: "URL é obrigatória" }, { status: 400 });
     }
 
     // Detect marketplace
     const marketplace = detectMarketplace(url);
     if (!marketplace) {
       return NextResponse.json(
-        { error: "Marketplace nÃ£o suportado. Use Amazon, Magalu, Americanas, Casas Bahia, KaBuM!, Ponto, Shopee ou Mercado Livre." },
+        { error: "Marketplace não suportado. Use Amazon, Magalu, Americanas, Casas Bahia, KaBuM!, Ponto, Shopee ou Mercado Livre." },
         { status: 400 }
       );
     }
@@ -39,14 +39,13 @@ export async function POST(request: Request) {
       .single();
 
     if (existing) {
-      return NextResponse.json({ error: "VocÃª jÃ¡ estÃ¡ rastreando este produto." }, { status: 409 });
+      return NextResponse.json({ error: "Você já está rastreando este produto." }, { status: 409 });
     }
 
     // Scrape product info using existing scraper
     const result = await scrapeProduct(url);
 
-    // If scraping failed, surface the error to the user instead of
-    // silently saving a product with no title or price.
+    // If scraping failed, surface the error
     if (!result.success) {
       return NextResponse.json(
         { error: result.error || "Não foi possível obter os dados do produto. Verifique a URL e tente novamente." },
@@ -100,6 +99,48 @@ export async function POST(request: Request) {
 }
 
 /**
+ * PATCH /api/products - Update a tracked product (e.g., Target Price)
+ */
+export async function PATCH(request: Request) {
+  const supabase = createClient();
+  const { data: { user } } = await supabase.auth.getUser();
+
+  if (!user) {
+    return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
+  }
+
+  try {
+    const body = await request.json();
+    const { id, targetPrice } = body;
+
+    if (!id) {
+      return NextResponse.json({ error: "ID é obrigatório" }, { status: 400 });
+    }
+
+    // Update product, ensuring the user owns it
+    const { data: product, error } = await supabase
+      .from("tracked_products")
+      .update({ target_price: targetPrice })
+      .eq("id", id)
+      .eq("user_id", user.id) // Segurança: garante que só o dono altera
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return NextResponse.json({ success: true, product }, { status: 200 });
+  } catch (err: any) {
+    console.error("Error updating product:", err);
+    return NextResponse.json(
+      { error: err.message || "Erro ao atualizar o preço alvo" },
+      { status: 500 }
+    );
+  }
+}
+
+/**
  * DELETE /api/products?id=xxx - Remove a tracked product
  */
 export async function DELETE(request: Request) {
@@ -107,14 +148,14 @@ export async function DELETE(request: Request) {
   const { data: { user } } = await supabase.auth.getUser();
 
   if (!user) {
-    return NextResponse.json({ error: "NÃ£o autorizado" }, { status: 401 });
+    return NextResponse.json({ error: "Não autorizado" }, { status: 401 });
   }
 
   const { searchParams } = new URL(request.url);
   const id = searchParams.get("id");
 
   if (!id) {
-    return NextResponse.json({ error: "ID Ã© obrigatÃ³rio" }, { status: 400 });
+    return NextResponse.json({ error: "ID é obrigatório" }, { status: 400 });
   }
 
   // Delete price records first
@@ -132,4 +173,3 @@ export async function DELETE(request: Request) {
 
   return NextResponse.json({ success: true });
 }
-
