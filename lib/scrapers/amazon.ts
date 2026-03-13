@@ -132,39 +132,49 @@ async function fetchAmazonPage(url: string, requestedAsin: string | null): Promi
 }
 
 function extractPrice($: cheerio.CheerioAPI, requestedAsin: string | null): number | null {
-  // 1. JSON-LD / Meta
-  let price = extractJsonLDPrice($) || extractMetaPrice($);
-  if (price) return price;
-
-  // 2. Extra Seletores Comuns da Amazon (Desktop e Mobile web)
-  const directSelectors = [
-    ".a-price[data-a-color='price'] span.a-offscreen",
-    "#corePriceDisplay_desktop_feature_div .a-price span.a-offscreen",
-    "#corePrice_feature_div .a-price span.a-offscreen",
-    "#priceblock_ourprice",
-    "#priceblock_dealprice",
-    ".a-price.a-text-price.a-size-medium.apexPriceToPay span.a-offscreen"
+  // 1. PRIORIDADE MÁXIMA: Bloco principal de preço (Buy Box / Display Feature)
+  // É aqui que a Amazon renderiza o preço final da variante selecionada na tela.
+  const mainBuyBoxSelectors = [
+    "#corePriceDisplay_desktop_feature_div",
+    "#corePrice_feature_div",
+    "#apex_desktop",
+    "#price_inside_buybox"
   ];
 
-  for (const selector of directSelectors) {
-    const textPrice = $(selector).first().text().trim();
-    if (textPrice) {
-      const p = parsePrice(textPrice);
-      if (p) return p;
+  for (const boxSelector of mainBuyBoxSelectors) {
+    const $box = $(boxSelector);
+    if ($box.length > 0) {
+      // Procura a estrutura exata que você inspecionou (whole + fraction)
+      const $whole = $box.find("span.a-price-whole").first();
+      const $fraction = $box.find("span.a-price-fraction").first();
+
+      if ($whole.length > 0) {
+        // Remove pontos e vírgulas (ex: "260," vira "260")
+        const wholeText = $whole.text().replace(/[,.]/g, "").trim();
+        const fracText = $fraction.text().trim() || "00";
+
+        const price = parsePrice(`${wholeText},${fracText}`);
+        if (price) return price;
+      }
+
+      // Fallback dentro da Buy Box: texto offscreen (para leitores de tela)
+      const offscreenText = $box.find(".a-price span.a-offscreen").first().text().trim();
+      if (offscreenText) {
+        const price = parsePrice(offscreenText);
+        if (price) return price;
+      }
     }
   }
 
-  // 3. Fallback para os seletores de variant que você já tinha
-  const prices = getPagePrices($);
-  if (prices.length > 0 && new Set(prices).size === 1) {
-    return prices[0];
-  }
+  // 2. Se não encontrou na Buy Box principal, tenta metadados estruturados (Fallback)
+  let price = extractJsonLDPrice($) || extractMetaPrice($);
+  if (price) return price;
 
-  // 4. Fallback final: pegar o primeiro preço "whole" + "fraction" encontrado
+  // 3. Fallback genérico: busca o primeiro preço que aparecer na página inteira
   const firstWhole = $("span.a-price-whole").first().text().replace(/[,.]/g, "").trim();
-  const firstFrac = $("span.a-price-fraction").first().text().trim();
+  const firstFrac = $("span.a-price-fraction").first().text().trim() || "00";
   if (firstWhole) {
-    return parsePrice(`${firstWhole},${firstFrac || "00"}`);
+    return parsePrice(`${firstWhole},${firstFrac}`);
   }
 
   return null;
